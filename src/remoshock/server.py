@@ -5,6 +5,7 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 import argparse
+import base64
 import html
 import json
 import os
@@ -83,6 +84,30 @@ class RemoshockRequestHandler(BaseHTTPRequestHandler):
         return False
 
 
+    def verify_web_site_authentication_if_required(self, headers):
+        """
+        validates authentication for website requests, if required 
+        according to remoshock.ini
+
+        @param headers HTTP headers
+        """
+        expected_username = remoshock.config.get("global", "web_site_username", fallback=None)
+        expected_password = remoshock.config.get("global", "web_site_password", fallback=None)
+        if expected_username is None and expected_password is None:
+            return True
+
+        if expected_username is None or expected_password is None:
+            print("ERROR: Either both web_site_username and web_site_password needs to be configured in remoshock.ini or neither.")
+            return False
+        
+        auth_header = headers.get("Authorization")
+        if auth_header is None:
+            return False
+
+        expected_value = "Basic " + base64.b64encode((expected_username + ":" + expected_password).encode("UTF-8")).decode()
+        return auth_header.lower() == expected_value.lower()
+
+
     def handle_command(self, params):
         """Sends the specified command to specified receiver"""
         action = Action[params["action"][0]]
@@ -114,6 +139,16 @@ class RemoshockRequestHandler(BaseHTTPRequestHandler):
 
         if not os.path.isfile(filename):
             self.answer_html(404, "Not found.")
+            return
+
+        if not self.verify_web_site_authentication_if_required(self.headers):
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", "Basic realm='Website'")
+            self.send_header("Content-type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Security-Policy", "default-src 'self'")
+            self.end_headers()
+            self.wfile.write("Authentication required.".encode("UTF-8"))
             return
 
         ext = os.path.splitext(filename)[1]
